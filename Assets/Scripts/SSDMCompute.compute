@@ -1,0 +1,172 @@
+﻿#pragma kernel Clear
+#pragma kernel FirstMip
+#pragma kernel SubsequentMip
+
+// #include "UnityCG.cginc"
+
+int _MipLevel;
+float _SizeX;
+float _SizeY;
+float _TexelSizeX;
+float _TexelSizeY;
+float4x4 invVP_clipToWorld;
+float4x4 VP_worldToClip;
+Texture2D<float4> _WorldPosSampler;
+Texture2D<float4> _ResultSampler;
+SamplerState linearClampSampler;
+SamplerState pointClampSampler;
+RWTexture2D<float4> _Result;
+
+inline float2 ndcToUv(float4 ndcPosition)
+{
+    float2 uv;
+    uv.x = ndcPosition.x;
+    uv.y = 1.0 - ndcPosition.y;
+    return uv;
+}
+
+inline float4 worldPosToNdcPos(float3 worldPos)
+{
+    // Apply the world-to-clip transformation
+    float4 clipPosition = mul(VP_worldToClip, float4(worldPos, 1.0));
+
+    // Divide by the w component to get homogeneous coordinates
+    clipPosition /= clipPosition.w;
+
+    // Map the clip space coordinates to NDC space
+    float2 ndcPosition;
+    ndcPosition.x = (clipPosition.x + 1.0) * 0.5;
+    ndcPosition.y = (1.0 - clipPosition.y) * 0.5;
+
+    // Combine the NDC position with the original z and w components
+    float4 ndcPositionWithZW = float4(ndcPosition, clipPosition.zw);
+
+    return ndcPositionWithZW;
+}
+
+inline float2 sampleUVFromWorldPos(float2 uv)
+{
+    float4 displacedWorldPos = _WorldPosSampler.SampleLevel(linearClampSampler, uv, _MipLevel - 1);
+    float4 displacedNdcPosWithZWFromWorldPos = worldPosToNdcPos(displacedWorldPos);
+    float2 displacedUvFromWorldPos = ndcToUv(displacedNdcPosWithZWFromWorldPos);
+    return displacedWorldPos.a > 0 ? displacedUvFromWorldPos : uv;
+}
+
+#define OFFSET_SIZE .5
+const float2 offsets[4] = {
+    float2(OFFSET_SIZE, OFFSET_SIZE),
+    float2(OFFSET_SIZE, -OFFSET_SIZE),
+    float2(-OFFSET_SIZE, -OFFSET_SIZE),
+    float2(-OFFSET_SIZE, OFFSET_SIZE)
+};
+
+inline float4 averageUVFromWorldPosTexel(float2 uv, float2 halfTexelSize)
+{
+    float2 displacedUvFromWorldPos;
+    int averageCount = 0;
+    for (int i = 0; i < 4; ++i)
+    {
+        float4 displacedWorldPos = _WorldPosSampler.SampleLevel(linearClampSampler, uv + (offsets[i] * halfTexelSize), _MipLevel - 1);
+        if (displacedWorldPos.a > 0)
+        {
+            float4 displacedNdcPosWithZWFromWorldPos = worldPosToNdcPos(displacedWorldPos);
+            displacedUvFromWorldPos += ndcToUv(displacedNdcPosWithZWFromWorldPos);
+            averageCount++;
+        }
+    }
+    displacedUvFromWorldPos /= averageCount;
+    return float4(displacedUvFromWorldPos, 0, averageCount > 0);
+}
+
+inline float4 averageUVFromWorldPosTexel2(float2 uv, float2 halfTexelSize)
+{
+    float2 displacedUvFromWorldPos;
+    // for (int i = 0; i < 4; ++i)
+    // {
+    //     float4 displacedWorldPos = _WorldPosSampler.SampleLevel(linearClampSampler, uv + (offsets[i] * halfTexelSize), _MipLevel - 1);
+    //     float4 displacedNdcPosWithZWFromWorldPos = worldPosToNdcPos(displacedWorldPos);
+    //     displacedUvFromWorldPos += ndcToUv(displacedNdcPosWithZWFromWorldPos);
+    // }
+    // displacedUvFromWorldPos /= 4;
+    float4 displacedWorldPos = _WorldPosSampler.SampleLevel(linearClampSampler, uv, _MipLevel - 1);
+    float4 displacedNdcPosWithZWFromWorldPos = worldPosToNdcPos(displacedWorldPos);
+    displacedUvFromWorldPos = ndcToUv(displacedNdcPosWithZWFromWorldPos);
+    return float4(displacedUvFromWorldPos, 0, 1);
+}
+
+inline float4 averageWorldPosTexel(float2 uv, float2 halfTexelSize)
+{
+    float3 displacedWorldPos;
+    int averageCount;
+    for (int i = 0; i < 4; ++i)
+    {
+        float4 worldPos = _WorldPosSampler.SampleLevel(linearClampSampler, uv + (offsets[i] * halfTexelSize), _MipLevel - 1);
+        if (worldPos.a > 0)
+        {
+            displacedWorldPos += worldPos.rgb;
+            averageCount++;
+        }
+    }
+    displacedWorldPos /= averageCount;
+    return float4(displacedWorldPos, averageCount > 0);
+}
+
+[numthreads(32, 32, 1)]
+void Clear (uint3 id : SV_DispatchThreadID)
+{
+    _Result[id.xy] = float4(0,0,0,0);
+}
+
+[numthreads(32, 32, 1)]
+void FirstMip (uint3 id : SV_DispatchThreadID)
+{
+    float2 uv = (float2)id.xy / float2(_SizeX, _SizeY);
+    
+    // _Result[id.xy] = float4(sampleUVFromWorldPos(uv), 0, 0);
+    // return;
+    
+    // float4 displacedWorldPos = _WorldPosSampler.SampleLevel(linearClampSampler, uv, _MipLevel - 1);
+    // float4 displacedWorldPos = averageWorldPosTexel(uv, texelSize);
+    // float4 displacedNdcPosWithZWFromWorldPos = worldPosToNdcPos(displacedWorldPos);
+    // float2 displacedUvFromWorldPos = ndcToUv(displacedNdcPosWithZWFromWorldPos);
+
+    float2 displacedUvFromWorldPos = averageUVFromWorldPosTexel2(uv, float2(_TexelSizeX, _TexelSizeY));
+    
+    // displacedUvFromWorldPos.x = clamp(displacedUvFromWorldPos.x, uv.x - halfTexelSize, uv.x + halfTexelSize);
+    // displacedUvFromWorldPos.y = clamp(displacedUvFromWorldPos.y, uv.y - halfTexelSize, uv.y + halfTexelSize);
+
+    // if (displacedWorldPos.a == 0)
+    //     _Result[id.xy] = float4(1, 0, 0, 0);
+    // else
+        _Result[id.xy] = float4(displacedUvFromWorldPos, 0, 1);
+}
+
+[numthreads(32, 32, 1)]
+void SubsequentMip(uint3 id : SV_DispatchThreadID)
+{
+    float2 uv = (float2)id.xy / float2(_SizeX, _SizeY);
+
+    // _Result[id.xy] = float4(sampleUVFromWorldPos(uv), 0, 0);
+    // return;
+
+    // float4 displacedWorldPos = _WorldPosSampler.SampleLevel(linearClampSampler, uv, _MipLevel - 1);
+    // float4 displacedWorldPos = averageWorldPosTexel(uv, texelSize);
+
+    float4 priorDisplacedUv = _ResultSampler.SampleLevel(linearClampSampler, uv , _MipLevel);
+    // float4 displacedWorldPos = averageWorldPosTexel(priorDisplacedUv, texelSize);
+    // float4 displacedNdcPosWithZWFromWorldPos = worldPosToNdcPos(displacedWorldPos);
+    // float2 displacedUvFromWorldPos = ndcToUv(displacedNdcPosWithZWFromWorldPos);
+    
+    // float4 displacedClipSpace = mul(_Projection, mul(_View, float4(displacedWorldPos.rgb, 1)));
+    // float2 displacedUv = (displacedClipSpace.xy * 0.5 + displacedClipSpace.w * 0.5) / displacedClipSpace.w;
+
+    float2 displacedUvFromWorldPos = averageUVFromWorldPosTexel2(priorDisplacedUv, float2(_TexelSizeX, _TexelSizeY));
+    
+    // displacedUvFromWorldPos.x = clamp(displacedUvFromWorldPos.x, uv.x - halfTexelSize, uv.x + halfTexelSize);
+    // displacedUvFromWorldPos.y = clamp(displacedUvFromWorldPos.y, uv.y - halfTexelSize, uv.y + halfTexelSize);
+    
+    // if (displacedWorldPos.a == 0)
+    //     _Result[id.xy] = float4(1, 0, 0, 0);
+    // else
+        _Result[id.xy] = float4(displacedUvFromWorldPos, 0, 1);
+}
