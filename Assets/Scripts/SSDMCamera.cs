@@ -1,6 +1,7 @@
 ﻿using System.Collections;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
+using UnityEngine.Serialization;
 
 namespace GeoTetra.SSDM
 {
@@ -11,10 +12,16 @@ namespace GeoTetra.SSDM
         Material m_DisplayMaterial;
         
         [SerializeField] 
+        Material m_DisplacedDisplayMaterial;
+        
+        [SerializeField] 
         Material m_CameraBlitMaterial;
         
         [SerializeField] 
         RenderTexture m_RenderTarget;
+        
+        [FormerlySerializedAs("m_DepthNormalTarget")] [SerializeField] 
+        RenderTexture m_NormalDepthTarget;
         
         [SerializeField] 
         RenderTexture m_DisplacedRenderTargetSampler;
@@ -41,7 +48,6 @@ namespace GeoTetra.SSDM
         int m_MipCount = 4;
         
         const int k_ThreadSize = 32;
-        int m_ClearKernelId;
         int m_FirstMipKernelId;
         int m_SubsequentMipKernelId;
         int m_BlitKernelId;
@@ -86,24 +92,37 @@ namespace GeoTetra.SSDM
 
         void Initialize()
         {
-            m_Camera.depthTextureMode |= DepthTextureMode.DepthNormals;
-            m_ClearKernelId = m_Compute.FindKernel("Clear");
+            m_Camera.depthTextureMode = DepthTextureMode.Depth | DepthTextureMode.DepthNormals;
             m_FirstMipKernelId = m_Compute.FindKernel("FirstMip");
             m_SubsequentMipKernelId = m_Compute.FindKernel("SubsequentMip");
             m_BlitKernelId = m_ComputeBlit.FindKernel("Blit");
             
             if (m_RenderTarget == null)
             {
-                m_RenderTarget = new RenderTexture(m_Width, m_Height, 0, GraphicsFormat.R16G16B16A16_SFloat, m_MipCount)
+                m_RenderTarget = new RenderTexture(m_Width, m_Height, 24, GraphicsFormat.R16G16B16A16_SFloat, m_MipCount)
                 {
                     // enableRandomWrite = true,
                     autoGenerateMips = true,
-                    useMipMap = true
+                    useMipMap = true,
+                    filterMode = FilterMode.Bilinear
                 };
                 m_RenderTarget.Create();
             }
 
             m_Camera.targetTexture = m_RenderTarget;
+            m_DisplayMaterial.mainTexture = m_RenderTarget;
+            
+            if (m_NormalDepthTarget == null)
+            {
+                m_NormalDepthTarget = new RenderTexture(m_Width, m_Height, 0, GraphicsFormat.R16G16B16A16_SFloat, m_MipCount)
+                {
+                    // enableRandomWrite = true,
+                    autoGenerateMips = true,
+                    useMipMap = true,
+                    filterMode = FilterMode.Bilinear
+                };
+                m_NormalDepthTarget.Create();
+            }
             
             if (m_DisplacedRenderTargetSampler == null)
             {
@@ -111,7 +130,8 @@ namespace GeoTetra.SSDM
                 {
                     enableRandomWrite = true,
                     autoGenerateMips = false,
-                    useMipMap = true
+                    useMipMap = true,
+                    filterMode = FilterMode.Bilinear
                 };
                 m_DisplacedRenderTargetSampler.Create();
             }
@@ -122,28 +142,24 @@ namespace GeoTetra.SSDM
                     {
                         enableRandomWrite = true,
                         autoGenerateMips = false,
-                        useMipMap = true
+                        useMipMap = true,
+                        filterMode = FilterMode.Bilinear
                     };
                 m_DisplacedRenderTarget.Create();
             }
             
-            m_DisplayMaterial.mainTexture = m_DisplacedRenderTarget;
+            m_DisplacedDisplayMaterial.mainTexture = m_DisplacedRenderTarget;
         }
         
         void OnRenderImage(RenderTexture src, RenderTexture dest) 
         {
-            // Graphics.Blit(src, dest, m_CameraBlitMaterial);
-            Graphics.Blit(src, dest);
-            
-            for (int mip = m_MipCount; mip > 0; mip--)
-            {
-                DispatchMipClear(mip, m_ClearKernelId);
-            }
-   
-            DispatchMipCompute(src, m_MipCount, m_FirstMipKernelId);
+            SSDMUtility.AddMatricesToMaterial(m_CameraBlitMaterial, m_Camera);
+            Graphics.Blit(src, dest, m_CameraBlitMaterial);
+
+            DispatchMipCompute(dest, m_MipCount, m_FirstMipKernelId);
             for (int mip = m_MipCount - 1; mip > 0; mip--)
             {
-                DispatchMipCompute(src, mip, m_SubsequentMipKernelId);
+                DispatchMipCompute(dest, mip, m_SubsequentMipKernelId);
             }
         }
 
@@ -152,15 +168,16 @@ namespace GeoTetra.SSDM
             var viewMatrix = m_Camera.worldToCameraMatrix;
             var projectionMatrix = m_Camera.projectionMatrix;
             projectionMatrix = GL.GetGPUProjectionMatrix(projectionMatrix, false);
-            var viewProjectMatrix_worldPosToClip = projectionMatrix * viewMatrix;
-            var inverseViewProjectionMatrix_clipToWorldPos = viewProjectMatrix_worldPosToClip.inverse;
-            m_Compute.SetMatrix("invVP_clipToWorld", inverseViewProjectionMatrix_clipToWorldPos);
-            m_Compute.SetMatrix("VP_worldToClip", viewProjectMatrix_worldPosToClip);
+            var viewProjectMatrix = projectionMatrix * viewMatrix;
+            m_Compute.SetMatrix("VP_WorldToClip", viewProjectMatrix);       
+            m_Compute.SetMatrix("invVP_ClipToWorld", viewProjectMatrix.inverse);
+            m_Compute.SetMatrix("V_WorldToObject", viewMatrix);
+            m_Compute.SetMatrix("invV_ObjectToWorld", viewMatrix.inverse);
             
             var mipIndex = mip - 1;
-            m_Compute.SetInt("_MipLevel", mip);
+            m_Compute.SetInt("_MipIndex", mipIndex);
             
-            m_Compute.SetTexture(kernelId,"_WorldPosSampler", m_RenderTarget);
+            m_Compute.SetTexture(kernelId,"_WorldPosSampler", src);
             m_Compute.SetTexture(kernelId,"_ResultSampler", m_DisplacedRenderTargetSampler);
             m_Compute.SetTexture(kernelId,"_Result", m_DisplacedRenderTarget, mipIndex);
             
@@ -168,11 +185,11 @@ namespace GeoTetra.SSDM
             var sizeY = m_Height >> mipIndex;
             m_Compute.SetFloat("_SizeX", sizeX);
             m_Compute.SetFloat("_SizeY", sizeY);
-            var texelSizeX = sizeX / 1.0f;
-            var texelSizeY = sizeY / 1.0f;
+            var texelSizeX = 1.0f / sizeX;
+            var texelSizeY = 1.0f / sizeY;
             m_Compute.SetFloat("_TexelSizeX", texelSizeX);
             m_Compute.SetFloat("_TexelSizeY", texelSizeY);
-            Debug.Log($"x {sizeX}  y {sizeY} - x {texelSizeX}  y {texelSizeY}");
+            // Debug.Log($"x {sizeX}  y {sizeY} - x {texelSizeX}  y {texelSizeY}");
             
             var threadSizeX = sizeX / k_ThreadSize;
             threadSizeX = threadSizeX < 1 ? 1 : threadSizeX;
@@ -180,8 +197,8 @@ namespace GeoTetra.SSDM
             threadSizeY = threadSizeY < 1 ? 1 : threadSizeY;
             m_Compute.Dispatch(kernelId, threadSizeX, threadSizeY, 1);
 
-            m_ComputeBlit.SetInt("_MipLevel", mip);
-            m_ComputeBlit.SetTexture(m_BlitKernelId,"_ResultSampler", m_DisplacedRenderTarget);
+            // m_ComputeBlit.SetInt("_MipIndex", mipIndex);
+            m_ComputeBlit.SetTexture(m_BlitKernelId,"_ResultSampler", m_DisplacedRenderTarget, mipIndex);
             m_ComputeBlit.SetTexture(m_BlitKernelId,"_Result", m_DisplacedRenderTargetSampler, mipIndex);
             m_ComputeBlit.Dispatch(m_BlitKernelId, threadSizeX, threadSizeY, 1);
         }

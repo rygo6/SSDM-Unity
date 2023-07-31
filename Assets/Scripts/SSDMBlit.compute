@@ -1,16 +1,10 @@
 ﻿#pragma kernel Blit
 
-int _MipLevel;
-Texture2D<float4> _ResultSampler;
-SamplerState linearClampSampler;
-SamplerState pointClampSampler;
+RWTexture2D<float4> _ResultSampler;
 RWTexture2D<float4> _Result;
 
 [numthreads(32,32,1)]
 void Blit (uint3 id : SV_DispatchThreadID)
 {
-    float2 size = 512 >> (_MipLevel - 1);
-    float2 uv = (float2)id.xy / size;
-    float4 sample = _ResultSampler.SampleLevel(linearClampSampler, uv, _MipLevel - 1);
-    _Result[id.xy] = sample;
+    _Result[id.xy] = _ResultSampler[id.xy];
 }

@@ -29,10 +29,12 @@
 			};
 
 			sampler2D _MainTex;
-			float4x4 invVP_clipToWorld;
-			float4x4 VP_worldToClip;
+			float4x4 invVP_ClipToWorld;
+			float4x4 VP_WorldToClip;
+			float4x4 invV_ObjectToWorld;
+			float4x4 V_WorldToObject;
 			sampler2D_float _CameraDepthTexture;
-			float4 _CameraDepthTexture_ST;
+			sampler2D_float _CameraDepthNormalsTexture;
 
 			v2f vert (appdata v)
 			{
@@ -51,7 +53,7 @@
 			float3 ndcPosAndDepthToWorldPos(float2 ndcPos, float depth)
 			{
 				float4 clipSpacePos = ndcPosAndDepthToClipSpacePos(ndcPos, depth);
-				float4 homogenizedWorldPos = mul(invVP_clipToWorld, clipSpacePos);
+				float4 homogenizedWorldPos = mul(invVP_ClipToWorld, clipSpacePos);
 				return homogenizedWorldPos.xyz / homogenizedWorldPos.w;
 			}
 
@@ -66,7 +68,7 @@
 			float4 worldPosToNdcPos(float3 worldPos)
 			{
 			    // Apply the world-to-clip transformation
-			    float4 clipPosition = mul(VP_worldToClip, float4(worldPos, 1.0));
+			    float4 clipPosition = mul(VP_WorldToClip, float4(worldPos, 1.0));
 
 			    // Divide by the w component to get homogeneous coordinates
 			    clipPosition /= clipPosition.w;
@@ -84,15 +86,33 @@
 
 			float4 frag (v2f i) : SV_Target
 			{
-				float2 ndcPos = i.uv.xy;
-				float3 worldPos = ndcPosAndDepthToWorldPos(ndcPos, 100);
-				// float4 ndcPosWithZWFromWorldPos = worldPosToNdcPos(worldPos);
-				// float2 uvFromWorldPos = ndcToUv(ndcPosWithZWFromWorldPos);
-
-				float4 color = tex2D(_MainTex, i.uv);
+				float4 sample = tex2D(_MainTex, i.uv);
+				if (sample.a == 0)
+					return float4(i.uv, 0, 0);
 				
-				return color.a > 0 ? color : float4(worldPos, 0);
-				// return color;
+				float4 depthNormalSample = tex2D(_CameraDepthNormalsTexture, i.uv.xy);
+				float3 viewNormal;
+				float viewDepth;
+				DecodeDepthNormal(depthNormalSample, viewDepth, viewNormal);
+				
+				float depthSample = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, i.uv.xy);
+				float sceneZ = LinearEyeDepth(depthSample);
+
+				float2 ndcPos = i.uv.xy;
+				float3 worldPos = ndcPosAndDepthToWorldPos(ndcPos, depthSample);
+				float4 ndcPosWithZWFromWorldPos = worldPosToNdcPos(worldPos);
+				float2 uvFromWorldPos = ndcToUv(ndcPosWithZWFromWorldPos);
+				
+				float3 sampleWorldPos = sample.rgb;
+				float4 ndcPosWithZWFromSampleWorldPos = worldPosToNdcPos(sampleWorldPos);
+				float2 uvFromSampleWorldPos = ndcToUv(ndcPosWithZWFromSampleWorldPos);
+				
+				float diffDepth = distance(uvFromWorldPos, uvFromSampleWorldPos);
+				// float diffDepth = distance(worldPos, sampleWorldPos);
+
+				float2 displacedNormal = viewNormal.xy * -diffDepth;
+				
+				return float4(displacedNormal + i.uv, 0, 0);
 			}
 			ENDCG
 		}

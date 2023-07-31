@@ -35,7 +35,7 @@ namespace GeoTetra.SSDM
 
         void Initialize()
         {
-            m_Camera.depthTextureMode |= DepthTextureMode.Depth;
+            m_Camera.depthTextureMode = DepthTextureMode.Depth | DepthTextureMode.DepthNormals;
             m_Camera.targetTexture = m_ColorBuffer;
             // m_Camera.SetReplacementShader(m_WorldPosShader, "");
             // m_Camera.ResetReplacementShader();
@@ -44,14 +44,9 @@ namespace GeoTetra.SSDM
         void OnRenderImage(RenderTexture src, RenderTexture dest) 
         {
             Graphics.Blit(src, m_ColorBuffer);
+
+            SSDMUtility.AddMatricesToMaterial(m_WorldPosBlit, m_Camera);
             
-            var viewMatrix = m_Camera.worldToCameraMatrix;
-            var projectionMatrix = m_Camera.projectionMatrix;
-            projectionMatrix = GL.GetGPUProjectionMatrix(projectionMatrix, false);
-            var viewProjectMatrix_worldPosToClip = projectionMatrix * viewMatrix;
-            var inverseViewProjectionMatrix_clipToWorldPos = viewProjectMatrix_worldPosToClip.inverse;
-            m_WorldPosBlit.SetMatrix("invVP_clipToWorld", inverseViewProjectionMatrix_clipToWorldPos);
-            m_WorldPosBlit.SetMatrix("VP_worldToClip", viewProjectMatrix_worldPosToClip);
             Graphics.Blit(src, m_WorldPosBuffer, m_WorldPosBlit);
         }
     }

@@ -7,7 +7,9 @@
 	}
 	SubShader
 	{
-		Cull Off ZWrite Off ZTest Always
+		Tags { "RenderType"="Opaque" }
+		Cull Off 
+		ZWrite On 
 
 		Pass
 		{
@@ -42,19 +44,16 @@
 			
 			float4 frag (v2f i) : SV_Target
 			{
-				// if (i.uv.x > .5) {
-				// 	float4 color = tex2D(_MainTex, i.uv);
-				// 	return color;
-				// }
-
 				float4 color = tex2D(_MainTex, i.uv);
 				if (color.a == 0)
 					discard;
 				
 				float4 normalDepth = tex2D(_NormalDepth, i.uv);
-				return float4(normalDepth.rgb, 1);
+				return float4(normalDepth.rgb, color.a);
 			}
 			ENDCG
 		}
+		
+		UsePass "Legacy Shaders/VertexLit/SHADOWCASTER"
 	}
 }
