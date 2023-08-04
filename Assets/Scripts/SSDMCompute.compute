@@ -1,5 +1,6 @@
 ﻿#pragma kernel FirstMip
 #pragma kernel SubsequentMip
+#pragma kernel FinalMip
 
 int _MipIndex;
 float _SizeX;
@@ -10,7 +11,7 @@ float4x4 invVP_ClipToWorld;
 float4x4 VP_WorldToClip;
 float4x4 invV_ObjectToWorld;
 float4x4 V_WorldToObject;
-Texture2D<float4> _WorldPosSampler;
+Texture2D<float4> _DisplacedUVSampler;
 Texture2D<float4> _ResultSampler;
 SamplerState linearClampSampler;
 SamplerState pointClampSampler;
@@ -22,41 +23,51 @@ RWTexture2D<float4> _Result;
 //     float2(1, 0),
 //     float2(0, 1)
 // };
-static const float2 offsets[4] = {
+// static const float2 offsets[4] = {
+//     float2(0, 0),
+//     float2(-1, -1),
+//     float2(-1, 0),
+//     float2(0, -1)
+// };
+static const float offsetCount = 4;
+static const float2 offsets[] = {
     float2(-1, -1),
     float2(1, 1),
     float2(1, -1),
     float2(-1, 1)
 };
 
-inline float2 AverageDisplacedUV(float2 uv, float2 texelSize, int mipIndex)
+inline float2 AverageQuadSample(float2 uv, float2 texelSize, int mipIndex, Texture2D<float4> displacedUVSampler)
 {
-    float2 halfTexelSize = texelSize * 0.5;
-    uv += halfTexelSize;
-    const int sampleCount = 4;
     float2 averagedDisplacedNormalVector = 0;
-    for (int i = 0; i < sampleCount; ++i)
+    const int subsampleCount = 4;
+    for (int subsample = 1; subsample < subsampleCount + 1; ++subsample)
     {
-        const float2 sampleUv = uv + (offsets[i] * halfTexelSize);
-        // const float2 sampleUv = uv;
-        // const float4 displaceNormalVector = _WorldPosSampler.SampleLevel(linearClampSampler, sampleUv, 0); // seems better with lowest mip?
-        const float4 displaceNormalVector = _WorldPosSampler.SampleLevel(linearClampSampler, sampleUv, mipIndex);
-        averagedDisplacedNormalVector += displaceNormalVector.xy;
-    }
-    averagedDisplacedNormalVector /= sampleCount;
-    
-    return averagedDisplacedNormalVector;
+        for (int i = 0; i < offsetCount; ++i)
+        {
+            const float2 sampleTexelSize = texelSize * (1.0 / subsample);
+            const float2 sampleUv = uv + (offsets[i] * sampleTexelSize);
+            // const float4 displaceNormalVector = _WorldPosSampler.SampleLevel(linearClampSampler, sampleUv, 0); // seems better with lowest mip?
+            float2 displaceNormalVector = displacedUVSampler.SampleLevel(linearClampSampler, sampleUv, mipIndex).xy;
+            // displaceNormalVector = sampleUv <= texelSize ? 0 : displaceNormalVector;
+            // displaceNormalVector = sampleUv >= 1.0 - texelSize ? 1: displaceNormalVector;
+            averagedDisplacedNormalVector += displaceNormalVector.xy;
+        }
+    }    
+    return averagedDisplacedNormalVector / (offsetCount * subsampleCount);
 }
 
 [numthreads(32, 32, 1)]
 void FirstMip (uint3 id : SV_DispatchThreadID)
 {
-    float2 uv = (float2)id.xy / float2(_SizeX, _SizeY);
-    float2 texelSize = float2(_TexelSizeX, _TexelSizeY);
+    float sizeX = 512 >> _MipIndex;
+    float sizeY = 512 >> _MipIndex;
+    float2 texelSize = float2(1.0 / sizeX, 1.0 / sizeY);
+    float2 halfTexelSize = texelSize / 2.0;
     
-    float2 averageDisplacedUV = AverageDisplacedUV(uv, texelSize, _MipIndex);
-
-    // float2 averageDisplacedUV = _WorldPosSampler.SampleLevel(linearClampSampler, uv, _MipIndex);
+    float2 uv = (float2)id.xy / float2(sizeX, sizeY);
+    
+    float2 averageDisplacedUV = AverageQuadSample(uv + halfTexelSize, texelSize * 1, _MipIndex, _DisplacedUVSampler);
     
     _Result[id.xy] = float4(averageDisplacedUV.xy, 0, 1);
 }
@@ -64,13 +75,29 @@ void FirstMip (uint3 id : SV_DispatchThreadID)
 [numthreads(32, 32, 1)]
 void SubsequentMip(uint3 id : SV_DispatchThreadID)
 {
-    float2 uv = (float2)id.xy / float2(_SizeX, _SizeY);
-    float2 texelSize = float2(_TexelSizeX, _TexelSizeY);
+    float sizeX = 512 >> _MipIndex;
+    float sizeY = 512 >> _MipIndex;
+    float2 texelSize = float2(1.0 / sizeX, 1.0 / sizeY);
+    float2 halfTexelSize = texelSize / 2.0;
     
-    float4 priorAveragedUV = _ResultSampler.SampleLevel(linearClampSampler, uv , _MipIndex + 1);
-    float2 averageDisplacedUV = AverageDisplacedUV(priorAveragedUV.xy, texelSize, _MipIndex);
+    float2 uv = (float2)id.xy / float2(sizeX, sizeY);
+    
+    // float4 priorAveragedUV = _ResultSampler.SampleLevel(linearClampSampler, uv + halfTexelSize, _MipIndex + 1);
+    float2 priorAveragedUV = AverageQuadSample(uv + halfTexelSize, halfTexelSize, _MipIndex + 1, _ResultSampler);
+    float2 averageDisplacedUV = AverageQuadSample(priorAveragedUV, texelSize * 1, _MipIndex, _DisplacedUVSampler);
+    
+    _Result[id.xy] = float4(averageDisplacedUV, 0, 1);
+}
 
-    // float2 averageDisplacedUV = _WorldPosSampler.SampleLevel(linearClampSampler, uv, _MipIndex);
-    
-    _Result[id.xy] = float4(averageDisplacedUV.xy, 0, 1);
+[numthreads(32, 32, 1)]
+void FinalMip(uint3 id : SV_DispatchThreadID)
+{
+    float sizeX = 512;
+    float sizeY = 512;
+    float2 texelSize = float2(1.0 / sizeX, 1.0 / sizeY);
+    float2 halfTexelSize = texelSize / 2.0;
+    float2 uv = (float2)id.xy / float2(sizeX, sizeY);
+    float4 priorAveragedUV = _ResultSampler.SampleLevel(linearClampSampler, uv + halfTexelSize, _MipIndex + 1);
+    float2 displaceNormalVector = _DisplacedUVSampler.SampleLevel(linearClampSampler, priorAveragedUV, 0).xy;    
+    _Result[id.xy] = float4(displaceNormalVector, 0, 1);
 }

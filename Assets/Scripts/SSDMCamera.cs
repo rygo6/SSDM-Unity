@@ -50,6 +50,7 @@ namespace GeoTetra.SSDM
         const int k_ThreadSize = 32;
         int m_FirstMipKernelId;
         int m_SubsequentMipKernelId;
+        int m_FinalMipKernelId;
         int m_BlitKernelId;
 
         // void OnValidate()
@@ -95,6 +96,7 @@ namespace GeoTetra.SSDM
             m_Camera.depthTextureMode = DepthTextureMode.Depth | DepthTextureMode.DepthNormals;
             m_FirstMipKernelId = m_Compute.FindKernel("FirstMip");
             m_SubsequentMipKernelId = m_Compute.FindKernel("SubsequentMip");
+            m_FinalMipKernelId = m_Compute.FindKernel("FinalMip");
             m_BlitKernelId = m_ComputeBlit.FindKernel("Blit");
             
             if (m_RenderTarget == null)
@@ -156,14 +158,15 @@ namespace GeoTetra.SSDM
             SSDMUtility.AddMatricesToMaterial(m_CameraBlitMaterial, m_Camera);
             Graphics.Blit(src, dest, m_CameraBlitMaterial);
 
-            DispatchMipCompute(dest, m_MipCount, m_FirstMipKernelId);
+            DispatchMipCompute(dest, m_MipCount - 1, m_FirstMipKernelId);
             for (int mip = m_MipCount - 1; mip > 0; mip--)
             {
-                DispatchMipCompute(dest, mip, m_SubsequentMipKernelId);
+                DispatchMipCompute(dest, mip - 1, m_SubsequentMipKernelId);
             }
+            // DispatchMipCompute(dest, 0, m_FinalMipKernelId);
         }
 
-        void DispatchMipCompute(RenderTexture src, int mip, int kernelId)
+        void DispatchMipCompute(RenderTexture src, int mipIndex, int kernelId)
         {
             var viewMatrix = m_Camera.worldToCameraMatrix;
             var projectionMatrix = m_Camera.projectionMatrix;
@@ -174,10 +177,9 @@ namespace GeoTetra.SSDM
             m_Compute.SetMatrix("V_WorldToObject", viewMatrix);
             m_Compute.SetMatrix("invV_ObjectToWorld", viewMatrix.inverse);
             
-            var mipIndex = mip - 1;
             m_Compute.SetInt("_MipIndex", mipIndex);
             
-            m_Compute.SetTexture(kernelId,"_WorldPosSampler", src);
+            m_Compute.SetTexture(kernelId,"_DisplacedUVSampler", src);
             m_Compute.SetTexture(kernelId,"_ResultSampler", m_DisplacedRenderTargetSampler);
             m_Compute.SetTexture(kernelId,"_Result", m_DisplacedRenderTarget, mipIndex);
             
